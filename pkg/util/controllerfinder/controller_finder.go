@@ -19,9 +19,6 @@ package controllerfinder
 import (
 	"context"
 
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	appsv1beta1 "github.com/openkruise/kruise/apis/apps/v1beta1"
-	"github.com/openkruise/kruise/pkg/util/configuration"
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -39,6 +36,10 @@ import (
 	scaleclient "k8s.io/client-go/scale"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	appsv1beta1 "github.com/openkruise/kruise/apis/apps/v1beta1"
+	"github.com/openkruise/kruise/pkg/util/configuration"
 )
 
 var Finder *ControllerFinder
@@ -48,13 +49,13 @@ func InitControllerFinder(mgr manager.Manager) error {
 		Client: mgr.GetClient(),
 		mapper: mgr.GetRESTMapper(),
 	}
-	cfg := mgr.GetConfig()
+	cfg := mgr.GetConfig() // 1.rest config
 	if cfg.GroupVersion == nil {
 		cfg.GroupVersion = &schema.GroupVersion{}
 	}
 	codecs := serializer.NewCodecFactory(mgr.GetScheme())
 	cfg.NegotiatedSerializer = codecs.WithoutConversion()
-	restClient, err := rest.RESTClientFor(cfg)
+	restClient, err := rest.RESTClientFor(cfg) // 2.通过 rest config 得到 restClient 和 k8sClient
 	if err != nil {
 		return err
 	}
@@ -62,7 +63,7 @@ func InitControllerFinder(mgr manager.Manager) error {
 	if err != nil {
 		return err
 	}
-	Finder.discoveryClient = k8sClient.Discovery()
+	Finder.discoveryClient = k8sClient.Discovery() // 3.通过 k8sClient 得到 discoveryClient
 	scaleKindResolver := scaleclient.NewDiscoveryScaleKindResolver(Finder.discoveryClient)
 	Finder.scaleNamespacer = scaleclient.New(restClient, Finder.mapper, dynamic.LegacyAPIPathResolverFunc, scaleKindResolver)
 	return nil
@@ -74,11 +75,11 @@ type ScaleAndSelector struct {
 	ControllerReference
 	// controller.spec.Replicas
 	Scale int32
-	// kruise statefulSet.spec.ReserveOrdinals
+	// kruise statefulSet.spec.ReserveOrdinals ????
 	ReserveOrdinals []int
 	// controller.spec.Selector
 	Selector *metav1.LabelSelector
-	// metadata
+	// controller.metadata
 	Metadata metav1.ObjectMeta
 }
 
@@ -101,41 +102,44 @@ type ControllerFinder struct {
 	client.Client
 
 	mapper          meta.RESTMapper
-	scaleNamespacer scaleclient.ScalesGetter
+	scaleNamespacer scaleclient.ScalesGetter // ??
 	discoveryClient discovery.DiscoveryInterface
 }
 
+// 一、GetExpectedScaleForPods 获取 pods 对应 controller 所有的 spec.replicas 和
 func (r *ControllerFinder) GetExpectedScaleForPods(pods []*corev1.Pod) (int32, error) {
 	// 1. Find the controller for each pod.  If any pod has 0 controllers,
 	// that's an error. With ControllerRef, a pod can only have 1 controller.
 	// A mapping from controllers to their scale.
-	podRefs := sets.NewString()
-	controllerScale := map[types.UID]int32{}
+	// 1.找到每个 pod 的 controller，如果任何 pod 有 0 个控制器，则返回错误，
+	//   使用 ControllerRef，一个 pod 只能有 1 个 controller， 从controller的映射 可以得到 scale
+	podRefs := sets.NewString()              // String = map[string]Empty key=controller.UID, value=empty{}
+	controllerScale := map[types.UID]int32{} // key = workload.UID value=controller.spec.replicas
 	for _, pod := range pods {
-		ref := metav1.GetControllerOf(pod)
+		ref := metav1.GetControllerOf(pod) // 1.1 得到 pod 对应的 OwnerReference
 		// ref has already been got, so there is no need to get again
 		if ref == nil || podRefs.Has(string(ref.UID)) {
 			continue
 		}
-		podRefs.Insert(string(ref.UID))
-		// Check all the supported controllers to find the desired scale.
+		podRefs.Insert(string(ref.UID)) // 1.2 controller 的 UID
+		// Check all the supported controllers to find the desired scale. 1.3 获取到 pod 指定 controller值封装的 ControllerReference
 		workload, err := r.GetScaleAndSelectorForRef(ref.APIVersion, ref.Kind, pod.Namespace, ref.Name, ref.UID)
 		if err != nil {
 			return 0, err
 		} else if workload == nil || !workload.Metadata.DeletionTimestamp.IsZero() {
 			continue
 		}
-		controllerScale[workload.UID] = workload.Scale
+		controllerScale[workload.UID] = workload.Scale // 1.4 controller 的 Scale 即是 spec.replicas
 	}
-	// 2. Add up all the controllers.
+	// 2. Add up all the controllers.    expectedCount=上述pods 对应的 controllers 的 spec.replicas 累加
 	var expectedCount int32
 	for _, count := range controllerScale {
 		expectedCount += count
 	}
-
 	return expectedCount, nil
 }
 
+// no
 func (r *ControllerFinder) GetScaleAndSelectorForRef(apiVersion, kind, ns, name string, uid types.UID) (*ScaleAndSelector, error) {
 	targetRef := ControllerReference{
 		APIVersion: apiVersion,
@@ -153,6 +157,7 @@ func (r *ControllerFinder) GetScaleAndSelectorForRef(apiVersion, kind, ns, name 
 	return nil, nil
 }
 
+// no
 func (r *ControllerFinder) Finders() []PodControllerFinder {
 	return []PodControllerFinder{r.getPodReplicationController, r.getPodDeployment, r.getPodReplicaSet,
 		r.getPodStatefulSet, r.getPodKruiseCloneSet, r.getPodKruiseStatefulSet, r.getPodStatefulSetLike, r.getScaleController}
@@ -169,6 +174,7 @@ var (
 	validWorkloadList = []schema.GroupVersionKind{ControllerKindRS, ControllerKindSS, ControllerKindRC, ControllerKindDep, ControllerKruiseKindCS, ControllerKruiseKindSS}
 )
 
+// no
 // getPodReplicaSet finds a replicaset which has no matching deployments.
 func (r *ControllerFinder) getPodReplicaSet(ref ControllerReference, namespace string) (*ScaleAndSelector, error) {
 	// This error is irreversible, so there is no need to return error
@@ -207,6 +213,7 @@ func (r *ControllerFinder) getPodReplicaSet(ref ControllerReference, namespace s
 	}, nil
 }
 
+// no
 // getPodReplicaSet finds a replicaset which has no matching deployments.
 func (r *ControllerFinder) getReplicaSet(ref ControllerReference, namespace string) (*apps.ReplicaSet, error) {
 	// This error is irreversible, so there is no need to return error
@@ -229,6 +236,7 @@ func (r *ControllerFinder) getReplicaSet(ref ControllerReference, namespace stri
 	return replicaSet, nil
 }
 
+// no
 // getPodStatefulSet returns the statefulset referenced by the provided controllerRef.
 func (r *ControllerFinder) getPodStatefulSet(ref ControllerReference, namespace string) (*ScaleAndSelector, error) {
 	// This error is irreversible, so there is no need to return error
@@ -262,6 +270,7 @@ func (r *ControllerFinder) getPodStatefulSet(ref ControllerReference, namespace 
 	}, nil
 }
 
+// no
 // getPodDeployments finds deployments for any replicasets which are being managed by deployments.
 func (r *ControllerFinder) getPodDeployment(ref ControllerReference, namespace string) (*ScaleAndSelector, error) {
 	// This error is irreversible, so there is no need to return error
@@ -294,6 +303,7 @@ func (r *ControllerFinder) getPodDeployment(ref ControllerReference, namespace s
 	}, nil
 }
 
+// no
 func (r *ControllerFinder) getPodReplicationController(ref ControllerReference, namespace string) (*ScaleAndSelector, error) {
 	// This error is irreversible, so there is no need to return error
 	ok, _ := verifyGroupKind(ref.APIVersion, ref.Kind, ControllerKindRC)
@@ -324,6 +334,7 @@ func (r *ControllerFinder) getPodReplicationController(ref ControllerReference, 
 	}, nil
 }
 
+// no
 // getPodStatefulSet returns the kruise cloneSet referenced by the provided controllerRef.
 func (r *ControllerFinder) getPodKruiseCloneSet(ref ControllerReference, namespace string) (*ScaleAndSelector, error) {
 	// This error is irreversible, so there is no need to return error
@@ -357,6 +368,7 @@ func (r *ControllerFinder) getPodKruiseCloneSet(ref ControllerReference, namespa
 	}, nil
 }
 
+// no
 // getPodStatefulSet returns the kruise statefulset referenced by the provided controllerRef.
 func (r *ControllerFinder) getPodKruiseStatefulSet(ref ControllerReference, namespace string) (*ScaleAndSelector, error) {
 	// This error is irreversible, so there is no need to return error
@@ -391,6 +403,7 @@ func (r *ControllerFinder) getPodKruiseStatefulSet(ref ControllerReference, name
 	}, nil
 }
 
+// no
 // getPodStatefulSetLike returns the statefulset like referenced by the provided controllerRef.
 func (r *ControllerFinder) getPodStatefulSetLike(ref ControllerReference, namespace string) (*ScaleAndSelector, error) {
 	// This error is irreversible, so there is no need to return error
@@ -446,6 +459,7 @@ func (r *ControllerFinder) getPodStatefulSetLike(ref ControllerReference, namesp
 	return scaleSelector, nil
 }
 
+// no
 func (r *ControllerFinder) getScaleController(ref ControllerReference, namespace string) (*ScaleAndSelector, error) {
 	if isValidGroupVersionKind(ref.APIVersion, ref.Kind) {
 		return nil, nil
@@ -492,6 +506,7 @@ func (r *ControllerFinder) getScaleController(ref ControllerReference, namespace
 	}, nil
 }
 
+// no
 func verifyGroupKind(apiVersion, kind string, gvk schema.GroupVersionKind) (bool, error) {
 	gv, err := schema.ParseGroupVersion(apiVersion)
 	if err != nil {
@@ -500,6 +515,7 @@ func verifyGroupKind(apiVersion, kind string, gvk schema.GroupVersionKind) (bool
 	return gv.Group == gvk.Group && kind == gvk.Kind, nil
 }
 
+// no
 func isValidGroupVersionKind(apiVersion, kind string) bool {
 	for _, gvk := range validWorkloadList {
 		valid, err := verifyGroupKind(apiVersion, kind, gvk)

@@ -23,10 +23,6 @@ import (
 	"strings"
 	"time"
 
-	appspub "github.com/openkruise/kruise/apis/apps/pub"
-	"github.com/openkruise/kruise/pkg/util"
-	"github.com/openkruise/kruise/pkg/util/podadapter"
-	"github.com/openkruise/kruise/pkg/util/revisionadapter"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +32,11 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	appspub "github.com/openkruise/kruise/apis/apps/pub"
+	"github.com/openkruise/kruise/pkg/util"
+	"github.com/openkruise/kruise/pkg/util/podadapter"
+	"github.com/openkruise/kruise/pkg/util/revisionadapter"
 )
 
 var (
@@ -74,6 +75,10 @@ type Interface interface {
 	Update(pod *v1.Pod, oldRevision, newRevision *apps.ControllerRevision, opts *UpdateOptions) UpdateResult
 	Refresh(pod *v1.Pod, opts *UpdateOptions) RefreshResult
 }
+
+// InPlaceUpdateEnvFromMetadata
+// 启用 Kruise 原地升级容器当它存在 env from 的 labels/annotations 发生了变化
+// 关闭后的影响: 容器中只有 image 能够原地升级
 
 // UpdateSpec records the images of containers which need to in-place update.
 type UpdateSpec struct {

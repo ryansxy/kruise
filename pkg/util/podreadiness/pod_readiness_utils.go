@@ -19,12 +19,13 @@ package podreadiness
 import (
 	"encoding/json"
 
-	appspub "github.com/openkruise/kruise/apis/apps/pub"
-	"github.com/openkruise/kruise/pkg/util"
-	"github.com/openkruise/kruise/pkg/util/podadapter"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
+
+	appspub "github.com/openkruise/kruise/apis/apps/pub"
+	"github.com/openkruise/kruise/pkg/util"
+	"github.com/openkruise/kruise/pkg/util/podadapter"
 )
 
 func addNotReadyKey(adp podadapter.Adapter, pod *v1.Pod, msg Message, condType v1.PodConditionType) error {
@@ -126,10 +127,12 @@ func removeMessage(base string, msg Message) (bool, messageList) {
 	return removed, newMessages
 }
 
+// 获取 pod 的 pod.Status.Conditions 中 Type==KruisePodReady的Condition
 func GetReadinessCondition(pod *v1.Pod) *v1.PodCondition {
 	return getReadinessCondition(pod, appspub.KruisePodReadyConditionType)
 }
 
+// 查看 pod的 spec.ReadinessGates 中 ConditionType是 KruisePodReady 的 ReadinessGate 是否存在
 func ContainsReadinessGate(pod *v1.Pod) bool {
 	return containsReadinessGate(pod, appspub.KruisePodReadyConditionType)
 }

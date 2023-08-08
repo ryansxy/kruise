@@ -17,10 +17,11 @@ limitations under the License.
 package pubcontrol
 
 import (
-	policyv1alpha1 "github.com/openkruise/kruise/apis/policy/v1alpha1"
-	"github.com/openkruise/kruise/pkg/util/controllerfinder"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	policyv1alpha1 "github.com/openkruise/kruise/apis/policy/v1alpha1"
+	"github.com/openkruise/kruise/pkg/util/controllerfinder"
 )
 
 type PubControl interface {
@@ -38,8 +39,9 @@ type PubControl interface {
 
 	// webhook
 	// determine if this change to pod might cause unavailability
+	// 确定对 Pod 的更改是否会导致不可用
 	IsPodUnavailableChanged(oldPod, newPod *corev1.Pod) bool
-	// get pub for pod
+	// get pub for pod 通过pod获取指定的pub
 	GetPubForPod(pod *corev1.Pod) (*policyv1alpha1.PodUnavailableBudget, error)
 }
 

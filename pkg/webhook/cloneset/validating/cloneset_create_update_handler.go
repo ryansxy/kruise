@@ -20,13 +20,14 @@ import (
 	"context"
 	"net/http"
 
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/runtime/inject"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 )
 
 // CloneSetCreateUpdateHandler handles CloneSet
@@ -66,6 +67,7 @@ func (h *CloneSetCreateUpdateHandler) Handle(ctx context.Context, req admission.
 			return admission.Errored(http.StatusUnprocessableEntity, allErrs.ToAggregate())
 		}
 	case admissionv1.Delete:
+		// delete 会触发防删除的操作
 		if len(req.OldObject.Raw) == 0 {
 			klog.Warningf("Skip to validate CloneSet %s/%s deletion for no old object, maybe because of Kubernetes version < 1.16", req.Namespace, req.Name)
 			return admission.ValidationResponse(true, "")

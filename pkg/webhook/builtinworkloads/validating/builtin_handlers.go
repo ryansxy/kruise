@@ -20,12 +20,13 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 	admissionv1 "k8s.io/api/admission/v1"
 	apps "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 )
 
 // WorkloadHandler handles built-in workloads, e.g. Deployment, ReplicaSet, StatefulSet
@@ -41,6 +42,7 @@ func (h *WorkloadHandler) InjectDecoder(d *admission.Decoder) error {
 
 // Handle handles admission requests.
 func (h *WorkloadHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
+	//  1.只会处理 Delete 的操作 或 subResource ！=""（比如status和 scale）
 	if req.Operation != admissionv1.Delete || req.SubResource != "" {
 		return admission.ValidationResponse(true, "")
 	}
@@ -51,6 +53,7 @@ func (h *WorkloadHandler) Handle(ctx context.Context, req admission.Request) adm
 
 	var metaObj metav1.Object
 	var replicas *int32
+	// 2.通过kind 判断类型，并将其转换为 Deployment、ReplicaSet、StatefulSet
 	switch req.Kind.Kind {
 	case "Deployment":
 		obj := &apps.Deployment{}
@@ -77,7 +80,8 @@ func (h *WorkloadHandler) Handle(ctx context.Context, req admission.Request) adm
 		klog.Warningf("Skip to validate %s %s/%s for unsupported resource", req.Kind.Kind, req.Namespace, req.Name)
 		return admission.ValidationResponse(true, "")
 	}
-
+	// 3.调用防删除，replicas=spec.replicas
+	// 所以如果value=Cascading，我们需要将deployment 缩容为0，才能删除，反之如果value=Always,直接将label移除即可
 	if err := deletionprotection.ValidateWorkloadDeletion(metaObj, replicas); err != nil {
 		return admission.Errored(http.StatusForbidden, err)
 	}

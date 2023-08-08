@@ -35,8 +35,9 @@ const (
 )
 
 // fsCertWriter provisions the certificate by reading and writing to the filesystem.
+// fsCertWriter 通过读取和写入文件系统来 提供证书
 type fsCertWriter struct {
-	// dnsName is the DNS name that the certificate is for.
+	// dnsName is the DNS name that the certificate is for.  dnsName 是证书的 DNS name。
 	dnsName string
 
 	*FSCertWriterOptions
@@ -44,20 +45,22 @@ type fsCertWriter struct {
 
 // FSCertWriterOptions are options for constructing a FSCertWriter.
 type FSCertWriterOptions struct {
-	// certGenerator generates the certificates.
+	// certGenerator generates the certificates. certGenerator 生成证书
 	CertGenerator generator.CertGenerator
-	// path is the directory that the certificate and private key and CA certificate will be written.
+	// path is the directory that the certificate and private key and CA certificate will be written.  path是写入certificate and private key and CA certificate的目录。
 	Path string
 }
 
 var _ CertWriter = &fsCertWriter{}
 
+// 设置CertGenerator 为 SelfSignedCertGenerator
 func (ops *FSCertWriterOptions) setDefaults() {
 	if ops.CertGenerator == nil {
 		ops.CertGenerator = &generator.SelfSignedCertGenerator{}
 	}
 }
 
+// 校验 path不能为空
 func (ops *FSCertWriterOptions) validate() error {
 	if len(ops.Path) == 0 {
 		return errors.New("path must be set in FSCertWriterOptions")
@@ -76,6 +79,7 @@ func NewFSCertWriter(ops FSCertWriterOptions) (CertWriter, error) {
 }
 
 // EnsureCert provisions certificates for a webhookClientConfig by writing the certificates in the filesystem.
+// EnsureCert 通过在filesystem中写入证书来为  webhookClientConfig 提供证书。
 func (f *fsCertWriter) EnsureCert(dnsName string) (*generator.Artifacts, bool, error) {
 	// create or refresh cert and write it to fs
 	f.dnsName = dnsName

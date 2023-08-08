@@ -21,12 +21,13 @@ import (
 	"fmt"
 	"net/http"
 
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	appsv1beta1 "github.com/openkruise/kruise/apis/apps/v1beta1"
-	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	appsv1beta1 "github.com/openkruise/kruise/apis/apps/v1beta1"
+	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 )
 
 // StatefulSetCreateUpdateHandler handles StatefulSet
@@ -78,6 +79,7 @@ func (h *StatefulSetCreateUpdateHandler) Handle(ctx context.Context, req admissi
 			}
 		}
 	case admissionv1.Delete:
+		// delete 会触发防删除的操作
 		if len(req.OldObject.Raw) == 0 {
 			klog.Warningf("Skip to validate StatefulSet %s/%s deletion for no old object, maybe because of Kubernetes version < 1.16", req.Namespace, req.Name)
 			return admission.ValidationResponse(true, "")

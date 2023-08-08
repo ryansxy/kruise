@@ -187,12 +187,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 1.1 webhook: 为 hookserver 设置 mgr
 	setupLog.Info("setup webhook")
 	if err = webhook.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to setup webhook")
 		os.Exit(1)
 	}
 
+	// 1.2 webhook: init hookserver
 	// +kubebuilder:scaffold:builder
 	setupLog.Info("initialize webhook")
 	if err := webhook.Initialize(ctx, cfg); err != nil {
@@ -200,6 +202,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 1.3 webhook: 为 hookserver 添加 health check 的方法
 	if err := mgr.AddReadyzCheck("webhook-ready", webhook.Checker); err != nil {
 		setupLog.Error(err, "unable to add readyz check")
 		os.Exit(1)
@@ -207,11 +210,12 @@ func main() {
 
 	go func() {
 		setupLog.Info("wait webhook ready")
-		if err = webhook.WaitReady(); err != nil {
+		if err = webhook.WaitReady(); err != nil { // 2.等待 webhook ready ，如果check后没有ready,sleep 2s 后会再次check
 			setupLog.Error(err, "unable to wait webhook ready")
 			os.Exit(1)
 		}
 
+		// 3. webhook 成功启动后，会设置controller
 		setupLog.Info("setup controllers")
 		if err = controller.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to setup controllers")

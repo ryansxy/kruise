@@ -24,15 +24,6 @@ import (
 	"reflect"
 	"time"
 
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	kruiseclient "github.com/openkruise/kruise/pkg/client"
-	"github.com/openkruise/kruise/pkg/features"
-	"github.com/openkruise/kruise/pkg/util"
-	utilclient "github.com/openkruise/kruise/pkg/util/client"
-	utildiscovery "github.com/openkruise/kruise/pkg/util/discovery"
-	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
-	utilimagejob "github.com/openkruise/kruise/pkg/util/imagejob"
-	"github.com/openkruise/kruise/pkg/util/requeueduration"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -52,6 +43,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	kruiseclient "github.com/openkruise/kruise/pkg/client"
+	"github.com/openkruise/kruise/pkg/features"
+	"github.com/openkruise/kruise/pkg/util"
+	utilclient "github.com/openkruise/kruise/pkg/util/client"
+	utildiscovery "github.com/openkruise/kruise/pkg/util/discovery"
+	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
+	utilimagejob "github.com/openkruise/kruise/pkg/util/imagejob"
+	"github.com/openkruise/kruise/pkg/util/requeueduration"
 )
 
 func init() {
@@ -77,7 +78,9 @@ const (
 
 // Add creates a new NodeImage Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
+// Add create NodeImage Controller, 并将它添加到 mgr
 func Add(mgr manager.Manager) error {
+	// 判断 该gvk 是否安装， kruiseDaemon是否开启？  未开启，未安装不add此controller  todo
 	if !utildiscovery.DiscoverGVK(controllerKind) || !utilfeature.DefaultFeatureGate.Enabled(features.KruiseDaemon) {
 		return nil
 	}
@@ -86,7 +89,7 @@ func Add(mgr manager.Manager) error {
 
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager) reconcile.Reconciler {
-	recorder := mgr.GetEventRecorderFor(controllerName)
+	recorder := mgr.GetEventRecorderFor(controllerName) // 1.获得此controller eventRecorder
 	if cli := kruiseclient.GetGenericClientWithName(controllerName); cli != nil {
 		eventBroadcaster := record.NewBroadcaster()
 		eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: cli.KubeClient.CoreV1().Events("")})
@@ -103,24 +106,29 @@ func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// Create a new controller
+	// 1.创建 controller 带上并发 work 数
 	c, err := controller.New(controllerName, mgr, controller.Options{Reconciler: r, MaxConcurrentReconciles: concurrentReconciles})
 	if err != nil {
 		return err
 	}
 
 	// Watch for changes to NodeImage
+	// 2.controller watch的对象是NodeImage，+默认event handler (EnqueueRequestForObject)
+	// EnqueueRequestForObject
 	err = c.Watch(&source.Kind{Type: &appsv1alpha1.NodeImage{}}, &handler.EnqueueRequestForObject{})
 	if err != nil {
 		return err
 	}
 
 	// Watch for changes to Node
+	// 3.controller watch的对象是Node，+  nodeHandler
 	err = c.Watch(&source.Kind{Type: &v1.Node{}}, &nodeHandler{Reader: mgr.GetCache()})
 	if err != nil {
 		return err
 	}
 
 	// Watch for deletion to ImagePullJob
+	// 4.controller watch的对象是ImagePullJob，+ imagePullJobHandler
 	err = c.Watch(&source.Kind{Type: &appsv1alpha1.ImagePullJob{}}, &imagePullJobHandler{Reader: mgr.GetCache()})
 	if err != nil {
 		return err
@@ -146,6 +154,11 @@ type ReconcileNodeImage struct {
 // Reconcile reads that state of the cluster for a NodeImage object and makes changes based on the state read
 // and what is in the NodeImage.Spec
 // Automatically generate RBAC rules to allow the Controller to read and write nodes
+
+// real logic
+// Reconcile 读取 集群中 NodeImage 对象的状态，并根据读取的状态和 NodeImage.spec 中的内容进行更改。
+// 自动生成 RBAC 规则以允许 Controller 读取和写入node
+//
 func (r *ReconcileNodeImage) Reconcile(_ context.Context, request reconcile.Request) (res reconcile.Result, err error) {
 	start := time.Now()
 	klog.V(5).Infof("Starting to process NodeImage %v", request.Name)
@@ -181,6 +194,9 @@ func (r *ReconcileNodeImage) Reconcile(_ context.Context, request reconcile.Requ
 	}
 
 	// If Node not exists or has been deleted
+	// 1.如果 node不存在，或node已经被删掉了
+	// 1.1 如果 nodeImage 不存在，或者其 DeletionTimestamp != nil 代表其需要被删除，直接返回
+	// 1.2  fakeLabelKey 如果不存在，删除 nodeImage
 	if node == nil || node.DeletionTimestamp != nil {
 		// All been deleted
 		if nodeImage == nil || nodeImage.DeletionTimestamp != nil {
@@ -197,6 +213,10 @@ func (r *ReconcileNodeImage) Reconcile(_ context.Context, request reconcile.Requ
 	}
 
 	// If Node exists, we should create a NodeImage
+	// 1.如果 node存在，应创建 NodeImage
+	// 1.1  如果 nodeImage 为空，不存在，
+	// 1.2  如果 nodeImage.DeletionTimestamp != nil ，不处理
+	// 1.3  否则，需要更新 nodeImage
 	if nodeImage == nil {
 		if isReady, delay := getNodeReadyAndDelayTime(node); !isReady {
 			klog.V(4).Infof("Skip to create NodeImage %s for Node has not ready yet.", request.Name)
@@ -223,16 +243,18 @@ func (r *ReconcileNodeImage) Reconcile(_ context.Context, request reconcile.Requ
 		return reconcile.Result{}, nil
 	}
 
+	//
 	duration := &requeueduration.Duration{}
 	if modified, err := r.updateNodeImage(nodeImage.Name, node, duration); err != nil {
 		return reconcile.Result{}, err
-	} else if modified {
+	} else if modified { // 定期更新 nodeImage,出错不处理，直接返回
 		return reconcile.Result{}, nil
 	}
 	if err = r.updateNodeImageStatus(nodeImage, duration); err != nil {
 		return reconcile.Result{}, err
 	}
 
+	// 每次等待3-5s后，重新入队
 	res = reconcile.Result{}
 	res.RequeueAfter, requeueMsg = duration.GetWithMsg()
 	if res.RequeueAfter > 0 && res.RequeueAfter < minRequeueDuration {
@@ -246,13 +268,16 @@ func (r *ReconcileNodeImage) updateNodeImage(name string, node *v1.Node, duratio
 	var modified bool
 	var messages []string
 	tmpDuration := &requeueduration.Duration{}
+	// DefaultBackoff 是针对冲突的推荐回退，其中客户端可能试图对由一个或多个控制器主动管理的资源进行不相关的修改。
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() (err error) {
 		nodeImage := &appsv1alpha1.NodeImage{}
+		// 1.1 获取nodeImage，失败返回error
 		err = r.Get(context.TODO(), types.NamespacedName{Name: name}, nodeImage)
 		if err != nil {
 			return err
 		}
 
+		// 1.2
 		modified, messages, tmpDuration = r.doUpdateNodeImage(nodeImage, node)
 		if !modified {
 			return nil
@@ -271,6 +296,8 @@ func (r *ReconcileNodeImage) updateNodeImage(name string, node *v1.Node, duratio
 func (r *ReconcileNodeImage) doUpdateNodeImage(nodeImage *appsv1alpha1.NodeImage, node *v1.Node) (modified bool, messages []string, wait *requeueduration.Duration) {
 	wait = &requeueduration.Duration{}
 	if node != nil {
+		// 判断 nodeImage 和 node 的label是否相等，
+		// 不相等，modified=true，messages
 		if !reflect.DeepEqual(nodeImage.Labels, node.Labels) {
 			modified = true
 			messages = append(messages, "node labels changed")

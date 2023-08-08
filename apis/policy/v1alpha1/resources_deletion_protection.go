@@ -22,7 +22,9 @@ const (
 	DeletionProtectionKey = "policy.kruise.io/delete-protection"
 
 	// DeletionProtectionTypeAlways indicates this object will always be forbidden to be deleted, unless the label is removed.
+	// DeletionProtectionTypeAlways 表示该对象将始终被禁止删除，除非标签被删除。
 	DeletionProtectionTypeAlways = "Always"
 	// DeletionProtectionTypeCascading indicates this object will be forbidden to be deleted, if it has active resources owned.
+	//DeletionProtectionTypeCascading 表示如果该对象拥有活动资源，则将禁止删除该对象。
 	DeletionProtectionTypeCascading = "Cascading"
 )

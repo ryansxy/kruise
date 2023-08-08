@@ -22,17 +22,6 @@ import (
 	"fmt"
 	"time"
 
-	kruiseappsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	kruiseappsv1beta1 "github.com/openkruise/kruise/apis/apps/v1beta1"
-	policyv1alpha1 "github.com/openkruise/kruise/apis/policy/v1alpha1"
-	kubeClient "github.com/openkruise/kruise/pkg/client"
-	"github.com/openkruise/kruise/pkg/control/pubcontrol"
-	"github.com/openkruise/kruise/pkg/features"
-	"github.com/openkruise/kruise/pkg/util"
-	"github.com/openkruise/kruise/pkg/util/controllerfinder"
-	utildiscovery "github.com/openkruise/kruise/pkg/util/discovery"
-	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
-	"github.com/openkruise/kruise/pkg/util/ratelimiter"
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -56,6 +45,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+
+	kruiseappsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	kruiseappsv1beta1 "github.com/openkruise/kruise/apis/apps/v1beta1"
+	policyv1alpha1 "github.com/openkruise/kruise/apis/policy/v1alpha1"
+	kubeClient "github.com/openkruise/kruise/pkg/client"
+	"github.com/openkruise/kruise/pkg/control/pubcontrol"
+	"github.com/openkruise/kruise/pkg/features"
+	"github.com/openkruise/kruise/pkg/util"
+	"github.com/openkruise/kruise/pkg/util/controllerfinder"
+	utildiscovery "github.com/openkruise/kruise/pkg/util/discovery"
+	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
+	"github.com/openkruise/kruise/pkg/util/ratelimiter"
 )
 
 func init() {
@@ -87,9 +88,10 @@ var ConflictRetry = wait.Backoff{
 // Add creates a new PodUnavailableBudget Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func Add(mgr manager.Manager) error {
-	if !utildiscovery.DiscoverGVK(controllerKind) {
+	if !utildiscovery.DiscoverGVK(controllerKind) { // 在 k8s 集群中，查看 k8s 的 DiscoveryClient 中是否有包含这个gvk，如果包含返回 true，添加该controller。 如果不包含，则返回false,返回
 		return nil
 	}
+	// 判断 pubDeleteGate 和 DefaultFeatureGate 是否开启，如果都没有开启，则返回
 	if !utilfeature.DefaultFeatureGate.Enabled(features.PodUnavailableBudgetDeleteGate) &&
 		!utilfeature.DefaultFeatureGate.Enabled(features.PodUnavailableBudgetUpdateGate) {
 		return nil
@@ -109,22 +111,35 @@ func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
+// 创建 controller 后， 会 watch 如下 obj
+// 1）watch pub 入队
+// 2) watch pod 入队
+// 3) watch deployment、kruise、CloneSet、StatefulSet， 如果是update事件，replicas发生了变更，如果是delete事件， 直接入queue (&SetEnqueueRequestForPUB{mgr},)
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
-	// Create a new controller
+	// 1.Create a new controller
 	c, err := controller.New("podunavailablebudget-controller", mgr, controller.Options{
-		Reconciler: r, MaxConcurrentReconciles: concurrentReconciles,
-		RateLimiter: ratelimiter.DefaultControllerRateLimiter()})
+		Reconciler: r, MaxConcurrentReconciles: concurrentReconciles, // 1.设置最大的task数
+		RateLimiter: ratelimiter.DefaultControllerRateLimiter()}) // 2. 设置 RateLimiterQueue
 	if err != nil {
 		return err
 	}
 
-	// Watch for changes to PodUnavailableBudget
+	// 2.Watch for changes to PodUnavailableBudget    pub 入队
+	// 1）Watch 获取 Source 提供的事件，并使用 EventHandler 排队 reconcile.Requests 以响应事件。
+	// 2）在将事件提供给 EventHandler 之前，可以为 Watch 提供一个或多个 Predicates 来过滤事件。 如果所有提供的 Predicates 评估为true，事件将传递给 EventHandler。
+
+	// EnqueueRequestForObject enqueues a Request containing the Name and Namespace of the object that is the source of the Event.
+	// (e.g. the created / deleted / updated objects Name and Namespace).  handler.EnqueueRequestForObject is used by almost all
+	// Controllers that have associated Resources (e.g. CRDs) to reconcile the associated Resource.
+
+	// EnqueueRequestForObject 将包含 作为事件源的对象的name和ns的request 排入队列。
+	// 比如 ：handler.EnqueueRequestForObject 几乎所有具有关联资源（例如 CRD）的控制器都使用它 reconcile the associated Resource.
 	err = c.Watch(&source.Kind{Type: &policyv1alpha1.PodUnavailableBudget{}}, &handler.EnqueueRequestForObject{})
 	if err != nil {
 		return err
 	}
 
-	// Watch for changes to Pod
+	// 3.Watch for changes to Pod
 	if err = c.Watch(&source.Kind{Type: &corev1.Pod{}}, newEnqueueRequestForPod(mgr.GetClient())); err != nil {
 		return err
 	}
@@ -135,13 +150,21 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// 1. cloneSet.replicas = 100, pub.MaxUnavailable = 10%, then UnavailableAllowed=10.
 	// 2. at this time the cloneSet.replicas is scaled down to 50, the pub controller listens to the replicas change, triggering reconcile will adjust UnavailableAllowed to 55.
 	// 3. so pub webhook will not intercept the request to delete the pods
-	// deployment
+	// 在 workload scaling 场景中，pub webhook 存在被扩展的 pod 拦截的风险。
+	// 这种场景的解决方案：pub controller监听workload replicas变化，及时调整Unavailable Allowed。比如
+	// 1. cloneSet.replicas = 100, pub.MaxUnavailable = 10%, then UnavailableAllowed=10.
+	// 2. 此时 cloneSet.replicas 缩小到 50，pub 控制器 监听副本变化，触发 reconcile 将调整 UnavailableAllowed 到 55。
+	// 3.  所以 pub webhook 不会拦截删除 pod 的请求
+
+	// 4.watch deployment    pub 入队
 	if err = c.Watch(&source.Kind{Type: &apps.Deployment{}}, &SetEnqueueRequestForPUB{mgr}, predicate.Funcs{
+		// 1. update 时, 判断 oldDeployment 和 newDeployment 的 replicas 是否发生变更，如果发生变更，代表需要 enqueue
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			old := e.ObjectOld.(*apps.Deployment)
 			new := e.ObjectNew.(*apps.Deployment)
 			return *old.Spec.Replicas != *new.Spec.Replicas
 		},
+		// 2.delete 时， 直接返回true
 		DeleteFunc: func(deleteEvent event.DeleteEvent) bool {
 			return true
 		},
@@ -149,7 +172,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	// kruise AdvancedStatefulSet
+	// 5, watch kruise AdvancedStatefulSet
 	if err = c.Watch(&source.Kind{Type: &kruiseappsv1beta1.StatefulSet{}}, &SetEnqueueRequestForPUB{mgr}, predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			old := e.ObjectOld.(*kruiseappsv1beta1.StatefulSet)
@@ -202,8 +225,8 @@ type ReconcilePodUnavailableBudget struct {
 	client.Client
 	Scheme           *runtime.Scheme
 	recorder         record.EventRecorder
-	controllerFinder *controllerfinder.ControllerFinder
-	pubControl       pubcontrol.PubControl
+	controllerFinder *controllerfinder.ControllerFinder // 得到 controllerRef
+	pubControl       pubcontrol.PubControl              //
 }
 
 // +kubebuilder:rbac:groups=policy.kruise.io,resources=podunavailablebudgets,verbs=get;list;watch;create;update;patch;delete
@@ -213,6 +236,7 @@ type ReconcilePodUnavailableBudget struct {
 // pkg/controller/cloneset/cloneset_controller.go Watch for changes to CloneSet
 func (r *ReconcilePodUnavailableBudget) Reconcile(_ context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Fetch the PodUnavailableBudget instance
+	// 1.获取 pub，如果 err !=nil 且err是notFound，或 pub存在，但是pub.DeletionTimestamp !=nil,则清除 GlobalCache中的pub；删除成功，则返回error, 删除失败，重试
 	pub := &policyv1alpha1.PodUnavailableBudget{}
 	err := r.Get(context.TODO(), req.NamespacedName, pub)
 	if (err != nil && errors.IsNotFound(err)) || (err == nil && !pub.DeletionTimestamp.IsZero()) {
@@ -238,7 +262,7 @@ func (r *ReconcilePodUnavailableBudget) Reconcile(_ context.Context, req ctrl.Re
 	}
 
 	klog.V(3).Infof("begin to process podUnavailableBudget(%s/%s)", pub.Namespace, pub.Name)
-	recheckTime, err := r.syncPodUnavailableBudget(pub)
+	recheckTime, err := r.syncPodUnavailableBudget(pub) //2.syncPub同时返回一个 recheckTime， 如果recheckTime不等于nil,等待 recheckTime 后再次入队
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -250,11 +274,11 @@ func (r *ReconcilePodUnavailableBudget) Reconcile(_ context.Context, req ctrl.Re
 
 func (r *ReconcilePodUnavailableBudget) syncPodUnavailableBudget(pub *policyv1alpha1.PodUnavailableBudget) (*time.Time, error) {
 	currentTime := time.Now()
-	pods, expectedCount, err := r.pubControl.GetPodsForPub(pub)
+	pods, expectedCount, err := r.pubControl.GetPodsForPub(pub) // 1. 从pub中获取对应的pods,和 expectedCount
 	if err != nil {
 		return nil, err
 	}
-	if len(pods) == 0 {
+	if len(pods) == 0 { // 2.如果pods 为 nil,打印event; 否则在workload 所有的 pod 上修改 related-pub annotation
 		r.recorder.Eventf(pub, corev1.EventTypeNormal, "NoPods", "No matching pods found")
 	} else {
 		// patch related-pub annotation in all pods of workload
@@ -265,12 +289,13 @@ func (r *ReconcilePodUnavailableBudget) syncPodUnavailableBudget(pub *policyv1al
 	}
 
 	klog.V(3).Infof("pub(%s/%s) controller pods(%d) expectedCount(%d)", pub.Namespace, pub.Name, len(pods), expectedCount)
-	desiredAvailable, err := r.getDesiredAvailableForPub(pub, expectedCount)
+	desiredAvailable, err := r.getDesiredAvailableForPub(pub, expectedCount) // 3.获取pub DesiredAvailable pod 个数
 	if err != nil {
 		r.recorder.Eventf(pub, corev1.EventTypeWarning, "CalculateExpectedPodCountFailed", "Failed to calculate the number of expected pods: %v", err)
 		return nil, err
 	}
 
+	// 4.
 	// for debug
 	var conflictTimes int
 	var costOfGet, costOfUpdate time.Duration
@@ -278,12 +303,12 @@ func (r *ReconcilePodUnavailableBudget) syncPodUnavailableBudget(pub *policyv1al
 	refresh := false
 	var recheckTime *time.Time
 	err = retry.RetryOnConflict(ConflictRetry, func() error {
-		unlock := util.GlobalKeyedMutex.Lock(string(pub.UID))
+		unlock := util.GlobalKeyedMutex.Lock(string(pub.UID)) //4.1 lock
 		defer unlock()
 
 		start := time.Now()
 		if refresh {
-			// fetch pub from etcd
+			// fetch pub from etcd  4.2 获取指定的pub，如果获取错误，直接返回err
 			pubClone, err = kubeClient.GetGenericClient().KruiseClient.PolicyV1alpha1().
 				PodUnavailableBudgets(pub.Namespace).Get(context.TODO(), pub.Name, metav1.GetOptions{})
 			if err != nil {
@@ -316,11 +341,16 @@ func (r *ReconcilePodUnavailableBudget) syncPodUnavailableBudget(pub *policyv1al
 
 		// disruptedPods contains information about pods whose eviction or deletion was processed by the API handler but has not yet been observed by the PodUnavailableBudget.
 		// unavailablePods contains information about pods whose specification changed(in-place update), in case of informer cache latency, after 5 seconds to remove it.
+
+		// disruptedPods 包含有关其eviction or deletion 已由 API 处理程序处理但尚未被 PodUnavailableBudget 观察到的 pod 的信息。
+		// unavailablePods 包含有关规格更改(in-place update)的 pod 的信息，以防 informer 缓存延迟，5 秒后将其删除。
+
 		var disruptedPods, unavailablePods map[string]metav1.Time
-		disruptedPods, unavailablePods, recheckTime = r.buildDisruptedAndUnavailablePods(pods, pubClone, currentTime)
+		disruptedPods, unavailablePods, recheckTime = r.buildDisruptedAndUnavailablePods(pods, pubClone, currentTime) // 4.3 获取 disruptedPods 和 unavailablePods pods
 		currentAvailable := countAvailablePods(pods, disruptedPods, unavailablePods, r.pubControl)
 
 		start = time.Now()
+		// 4.4 调用 update PubStatus
 		updateErr := r.updatePubStatus(pubClone, currentAvailable, desiredAvailable, expectedCount, disruptedPods, unavailablePods)
 		costOfUpdate += time.Since(start)
 		if updateErr == nil {

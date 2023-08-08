@@ -26,9 +26,9 @@ import (
 )
 
 func NewClientFromManager(mgr manager.Manager, name string) client.Client {
-	cfg := rest.CopyConfig(mgr.GetConfig())
-	cfg.UserAgent = fmt.Sprintf("kruise-manager/%s", name)
+	cfg := rest.CopyConfig(mgr.GetConfig())                // get rest.Config
+	cfg.UserAgent = fmt.Sprintf("kruise-manager/%s", name) // UserAgent is an optional field that specifies the caller of this request.  可选字段，用于指定request的调用者
 
-	delegatingClient, _ := cluster.DefaultNewClient(mgr.GetCache(), cfg, client.Options{Scheme: mgr.GetScheme(), Mapper: mgr.GetRESTMapper()})
+	delegatingClient, _ := cluster.DefaultNewClient(mgr.GetCache(), cfg, client.Options{Scheme: mgr.GetScheme(), Mapper: mgr.GetRESTMapper()}) //通过mgr的属性，构造delegatingClient
 	return delegatingClient
 }

@@ -20,14 +20,15 @@ import (
 	"context"
 	"testing"
 
-	appspub "github.com/openkruise/kruise/apis/apps/pub"
-	utilpodreadiness "github.com/openkruise/kruise/pkg/util/podreadiness"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	appspub "github.com/openkruise/kruise/apis/apps/pub"
+	utilpodreadiness "github.com/openkruise/kruise/pkg/util/podreadiness"
 )
 
 func TestReconcile(t *testing.T) {
@@ -46,6 +47,7 @@ func TestReconcile(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(pod0, pod1).Build()
 	reconciler := &ReconcilePodReadiness{Client: fakeClient}
 
+	// 1.triggle request
 	_, err := reconciler.Reconcile(context.TODO(), reconcile.Request{NamespacedName: types.NamespacedName{Namespace: pod0.Namespace, Name: pod0.Name}})
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +57,7 @@ func TestReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 2.get response obj check it have the KruisePodReady condition
 	newPod0 := &v1.Pod{}
 	if err := fakeClient.Get(context.TODO(), types.NamespacedName{Namespace: pod0.Namespace, Name: pod0.Name}, newPod0); err != nil {
 		t.Fatal(err)

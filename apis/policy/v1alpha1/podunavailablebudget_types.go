@@ -71,7 +71,7 @@ type TargetReference struct {
 	Name string `json:"name,omitempty"`
 }
 
-// PodUnavailableBudgetStatus defines the observed state of PodUnavailableBudget
+// PodUnavailableBudgetStatus defines the observed state of PodUnavailableBudget 定义了 pub  观察的 state
 type PodUnavailableBudgetStatus struct {
 	// Most recent generation observed when updating this PUB status. UnavailableAllowed and other
 	// status information is valid only if observedGeneration equals to PUB's object generation.
@@ -81,20 +81,22 @@ type PodUnavailableBudgetStatus struct {
 	// DisruptedPods contains information about pods whose eviction or deletion was
 	// processed by the API handler but has not yet been observed by the PodUnavailableBudget.
 	// +optional
+	// DisruptedPods 包含有关 驱逐或删除已由 API 处理程序处理,但尚未被 PodUnavailableBudget 观察到的 Pod 的信息。
 	DisruptedPods map[string]metav1.Time `json:"disruptedPods,omitempty"`
 
 	// UnavailablePods contains information about pods whose specification changed(inplace-update pod),
 	// once pod is available(consistent and ready) again, it will be removed from the list.
 	// +optional
+	// UnavailablePods 包含有关spec更改的 pod 的信息（inplace-update pod），一旦 pod 再次可用(consistent and ready)，它将从列表中删除。
 	UnavailablePods map[string]metav1.Time `json:"unavailablePods,omitempty"`
 
-	// UnavailableAllowed number of pod unavailable that are currently allowed
+	// UnavailableAllowed number of pod unavailable that are currently allowed   当前允许的不可用的pod数量
 	UnavailableAllowed int32 `json:"unavailableAllowed"`
 
-	// CurrentAvailable current number of available pods
+	// CurrentAvailable current number of available pods   当前可用的 pod 数
 	CurrentAvailable int32 `json:"currentAvailable"`
 
-	// DesiredAvailable minimum desired number of available pods
+	// DesiredAvailable minimum desired number of available pods  DesiredAvailable 所需的最小可用 pod 数量
 	DesiredAvailable int32 `json:"desiredAvailable"`
 
 	// TotalReplicas total number of pods counted by this unavailable budget

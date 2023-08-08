@@ -39,10 +39,12 @@ type GateFunc func() (enabled bool)
 
 var (
 	// HandlerMap contains all admission webhook handlers.
-	HandlerMap   = map[string]admission.Handler{}
-	handlerGates = map[string]GateFunc{}
+	HandlerMap   = map[string]admission.Handler{} // key=path,value=对应的Handler
+	handlerGates = map[string]GateFunc{}          // key=path,value=是否开启，不开启的才会放这里
 )
 
+// 这个方法会被这个 package 下，所有的 add_ 开头的文件中 的 init() 方法调用
+// 在 golang 中对于一个包下有多个文件，多个文件有多个init方法，并不是按照文件的顺序执行的，而是按照调用的顺序执行的。
 func addHandlers(m map[string]admission.Handler) {
 	addHandlersWithGate(m, nil)
 }
@@ -53,7 +55,7 @@ func addHandlersWithGate(m map[string]admission.Handler, fn GateFunc) {
 			klog.Warningf("Skip handler with empty path.")
 			continue
 		}
-		if path[0] != '/' {
+		if path[0] != '/' { // 如果 path 的第一个字符不是/, 为其加上/
 			path = "/" + path
 		}
 		_, found := HandlerMap[path]
@@ -67,6 +69,7 @@ func addHandlersWithGate(m map[string]admission.Handler, fn GateFunc) {
 	}
 }
 
+// 过滤没有开启 的 path 和 其handler
 func filterActiveHandlers() {
 	disablePaths := sets.NewString()
 	for path := range HandlerMap {
@@ -81,21 +84,22 @@ func filterActiveHandlers() {
 	}
 }
 
+// 一个标准的使用 controller-runtime 实现的 webhook server
 func SetupWithManager(mgr manager.Manager) error {
 	server := mgr.GetWebhookServer()
 	server.Host = "0.0.0.0"
-	server.Port = webhookutil.GetPort()
-	server.CertDir = webhookutil.GetCertDir()
+	server.Port = webhookutil.GetPort()       // 获取 port, 考虑灵活，支持从 env 中读取
+	server.CertDir = webhookutil.GetCertDir() // 获取 CertDir，支持从 env 中读取
 
 	// register admission handlers
 	filterActiveHandlers()
 	for path, handler := range HandlerMap {
-		server.Register(path, &webhook.Admission{Handler: handler})
+		server.Register(path, &webhook.Admission{Handler: handler}) // 为server 注册 path 和 handler
 		klog.V(3).Infof("Registered webhook handler %s", path)
 	}
 
 	// register conversion webhook
-	server.Register("/convert", &conversion.Webhook{})
+	server.Register("/convert", &conversion.Webhook{}) // controller-runtime 默认的路径和Handler,用来解决啥？？
 
 	// register health handler
 	server.Register("/healthz", &health.Handler{})
@@ -109,7 +113,7 @@ func SetupWithManager(mgr manager.Manager) error {
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;update;patch
 
 func Initialize(ctx context.Context, cfg *rest.Config) error {
-	c, err := webhookcontroller.New(cfg, HandlerMap)
+	c, err := webhookcontroller.New(cfg, HandlerMap) // 1.启动 controller ,处理证书相关的事
 	if err != nil {
 		return err
 	}
@@ -120,9 +124,9 @@ func Initialize(ctx context.Context, cfg *rest.Config) error {
 	timer := time.NewTimer(time.Second * 20)
 	defer timer.Stop()
 	select {
-	case <-webhookcontroller.Inited():
+	case <-webhookcontroller.Inited(): // 2.如果初始化完成，会close掉channel, 这里case会通过
 		return nil
-	case <-timer.C:
+	case <-timer.C: // 3. 如果初始化未完成，每过20s进行一次
 		return fmt.Errorf("failed to start webhook controller for waiting more than 20s")
 	}
 }
@@ -134,9 +138,10 @@ func Checker(req *http.Request) error {
 	default:
 		return fmt.Errorf("webhook controller has not initialized")
 	}
-	return health.Checker(req)
+	return health.Checker(req) // 真正发起 webhook 服务的 check 操作
 }
 
+// 等待 wenhook ready ，如果check后没有ready,sleep 2s 后会再次check
 func WaitReady() error {
 	startTS := time.Now()
 	var err error

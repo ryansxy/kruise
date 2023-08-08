@@ -42,6 +42,7 @@ var _ admission.Handler = &NamespaceHandler{}
 
 // Handle handles admission requests.
 func (h *NamespaceHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
+	// 1.只会处理 Delete 的操作 或 subResource ！=""（比如status和 scale）
 	if req.AdmissionRequest.Operation != admissionv1.Delete || req.AdmissionRequest.SubResource != "" {
 		return admission.ValidationResponse(true, "")
 	}
@@ -49,12 +50,13 @@ func (h *NamespaceHandler) Handle(ctx context.Context, req admission.Request) ad
 		klog.Warningf("Skip to validate namespace %s deletion for no old object, maybe because of Kubernetes version < 1.16", req.Name)
 		return admission.ValidationResponse(true, "")
 	}
-
+	// 2.将 OldObj 解析为 namespace
 	obj := &v1.Namespace{}
 	if err := h.Decoder.DecodeRaw(req.AdmissionRequest.OldObject, obj); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 
+	// 3.进行防删除校验: 如果err不为nil,则拒绝本次删除请求
 	if err := deletionprotection.ValidateNamespaceDeletion(h.Client, obj); err != nil {
 		return admission.Errored(http.StatusForbidden, err)
 	}

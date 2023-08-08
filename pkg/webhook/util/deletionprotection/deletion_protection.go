@@ -27,16 +27,23 @@ import (
 	kubecontroller "k8s.io/kubernetes/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	policyv1alpha1 "github.com/openkruise/kruise/apis/policy/v1alpha1"
 	"github.com/openkruise/kruise/pkg/features"
 	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// builtin_handlers、cloneset、StatefulSet、UnitedDeployment
 func ValidateWorkloadDeletion(obj metav1.Object, replicas *int32) error {
+	// 1.如果 ResourcesDeletionProtection gate 没有开启，或 workload.DeletionTimestamp!=nil，则返回nil
 	if !utilfeature.DefaultFeatureGate.Enabled(features.ResourcesDeletionProtection) || obj == nil || obj.GetDeletionTimestamp() != nil {
 		return nil
 	}
+	// 2.得到 对象 policy.kruise.io/delete-protection 的 label
+	//   如果value=always,表示该对象将始终被禁止删除，除非标签被删除。
+	//   如果value=Cascading,表示如果该对象拥有活动资源，则将禁止删除该对象。
+	//  注：因为传的replicas是spec.replicas，所以如果value=Cascading，我们需要将deployment 缩容为0，才能删除，反之如果value=Always,直接将label移除即可
 	switch val := obj.GetLabels()[policyv1alpha1.DeletionProtectionKey]; val {
 	case policyv1alpha1.DeletionProtectionTypeAlways:
 		return fmt.Errorf("forbidden by ResourcesProtectionDeletion for %s=%s", policyv1alpha1.DeletionProtectionKey, val)
@@ -50,13 +57,19 @@ func ValidateWorkloadDeletion(obj metav1.Object, replicas *int32) error {
 }
 
 func ValidateNamespaceDeletion(c client.Client, namespace *v1.Namespace) error {
+	// 1.如果 ResourcesDeletionProtection gate 没有开启，或 namespace.DeletionTimestamp!=nil，则返回nil
 	if !utilfeature.DefaultFeatureGate.Enabled(features.ResourcesDeletionProtection) || namespace.DeletionTimestamp != nil {
 		return nil
 	}
+	// 2.如果namespace 有 DeletionProtectionKey label
 	switch val := namespace.Labels[policyv1alpha1.DeletionProtectionKey]; val {
+	// 2.1 如果 label = always, 返回 err,除非 label 删除
 	case policyv1alpha1.DeletionProtectionTypeAlways:
 		return fmt.Errorf("forbidden by ResourcesProtectionDeletion for %s=%s", policyv1alpha1.DeletionProtectionKey, val)
 	case policyv1alpha1.DeletionProtectionTypeCascading:
+		// 2.2 如果label=Cascading
+		// 获取这个ns下所有的Pod,如果有pod的状态是active,则拒绝删除。
+		// 如果pod 不是 succeeded、failed 或 pod.DeletionTimestamp!=nil,代表 pod 是 active 的
 		pods := v1.PodList{}
 		if err := c.List(context.TODO(), &pods, client.InNamespace(namespace.Name)); err != nil {
 			return fmt.Errorf("forbidden by ResourcesProtectionDeletion for list pods error: %v", err)
@@ -76,7 +89,10 @@ func ValidateNamespaceDeletion(c client.Client, namespace *v1.Namespace) error {
 	return nil
 }
 
+// CustomResourceDefinition 删除时，需要判断其下面的cr资源是不是活跃的
+// 如果 cr 资源的 DeletionTimestamp 不为 nil，则代表是active的
 func ValidateCRDDeletion(c client.Client, obj metav1.Object, gvk schema.GroupVersionKind) error {
+	// 1.如果 ResourcesDeletionProtection gate 没有开启，或 crd.DeletionTimestamp!=nil，则返回nil
 	if !utilfeature.DefaultFeatureGate.Enabled(features.ResourcesDeletionProtection) || obj.GetDeletionTimestamp() != nil {
 		return nil
 	}

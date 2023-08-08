@@ -20,16 +20,63 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/openkruise/kruise/pkg/control/pubcontrol"
-	"github.com/openkruise/kruise/pkg/features"
-	"github.com/openkruise/kruise/pkg/util/controllerfinder"
-	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/runtime/inject"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/openkruise/kruise/pkg/control/pubcontrol"
+	"github.com/openkruise/kruise/pkg/features"
+	"github.com/openkruise/kruise/pkg/util/controllerfinder"
+	utilfeature "github.com/openkruise/kruise/pkg/util/feature"
 )
+
+/*
+// 1）UPDATE 和 DELETE pod 时，策略都为 Fail
+// 2) Create pods/eviction 时，策略为 Fail
+- admissionReviewVersions:
+  - v1
+  - v1beta1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-pod
+  failurePolicy: Fail
+  name: vpod.kb.io
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - UPDATE
+    - DELETE
+    resources:
+    - pods
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  - v1beta1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-pod
+  failurePolicy: Fail
+  name: vpodeviction.kb.io
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    resources:
+    - pods/eviction
+  sideEffects: None
+*/
 
 // PodCreateHandler handles Pod
 type PodCreateHandler struct {
@@ -48,24 +95,27 @@ type PodCreateHandler struct {
 
 func (h *PodCreateHandler) validatingPodFn(ctx context.Context, req admission.Request) (allowed bool, reason string, err error) {
 	allowed = true
+	// 1.如果 Operation 为 Delete 且 oldObj == 0， 直接返回，因为在1.16版本之前 req.OldObject不存在
 	if req.Operation == admissionv1.Delete && len(req.OldObject.Raw) == 0 {
 		klog.Warningf("Skip to validate pod %s/%s deletion for no old object, maybe because of Kubernetes version < 1.16", req.Namespace, req.Name)
 		return
 	}
 
 	switch req.Operation {
+	// 1.如果是 update 操作， 且 pubUpdateGate开启，调用 pubValidatingPod() 查看pod是否被允许
 	case admissionv1.Update:
 		if utilfeature.DefaultFeatureGate.Enabled(features.PodUnavailableBudgetUpdateGate) {
 			allowed, reason, err = h.podUnavailableBudgetValidatingPod(ctx, req)
 		}
 	case admissionv1.Delete, admissionv1.Create:
+		// 2.1 如果是 Delete和 Create操作, 且 WorkloadSpreadGate 开启，调用 workloadSpreadValidatingPod() 查看pod是否被允许
 		if utilfeature.DefaultFeatureGate.Enabled(features.WorkloadSpread) {
 			allowed, reason, err = h.workloadSpreadValidatingPod(ctx, req)
 			if !allowed || err != nil {
 				return
 			}
 		}
-
+		// 2.2 如果是 Delete和 Create操作, 且 PodUnavailableBudgetDeleteGate 开启，调用 pubValidatingPod() 查看pod是否被允许
 		if utilfeature.DefaultFeatureGate.Enabled(features.PodUnavailableBudgetDeleteGate) {
 			allowed, reason, err = h.podUnavailableBudgetValidatingPod(ctx, req)
 		}
@@ -77,6 +127,8 @@ func (h *PodCreateHandler) validatingPodFn(ctx context.Context, req admission.Re
 var _ admission.Handler = &PodCreateHandler{}
 
 // Handle handles admission requests.
+// 如果 error 不等于 nil，返回 error,拒绝请求，
+// error==nil，成功
 func (h *PodCreateHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	allowed, reason, err := h.validatingPodFn(ctx, req)
 	if err != nil {

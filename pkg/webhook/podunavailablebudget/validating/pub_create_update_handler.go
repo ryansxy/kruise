@@ -54,20 +54,50 @@ type PodUnavailableBudgetCreateUpdateHandler struct {
 
 var _ admission.Handler = &PodUnavailableBudgetCreateUpdateHandler{}
 
+/*
+webhook的配置，可以看到 PodUnavailableBudgetCreateUpdateHandler 只会对Create和update pub 的事件响应；
+- admissionReviewVersions:
+  - v1
+  - v1beta1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-policy-kruise-io-podunavailablebudget
+  failurePolicy: Fail
+  name: vpodunavailablebudget.kb.io
+  rules:
+  - apiGroups:
+    - policy.kruise.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - podunavailablebudgets
+  sideEffects: None
+
+注:
+1.如果 PodUnavailableBudgetDeleteGate 和 PodUnavailableBudgetUpdateGate 都没有开启，此 webhook 会返回错误，按照策略是Fail,则 create和 update pub 的请求会被拒绝
+2.如果1步骤通过，会对本次操作的pub对象进行校验，合法则会更新，比如如果是create,只校验newObj,如果是Update,校验 newObj和oldObj
+*/
+
 // Handle handles admission requests.
 func (h *PodUnavailableBudgetCreateUpdateHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
+	// 1.如果 pubDelete gate 没有开启 且 pubUpdate Gate (保护 pod in-place update) 没有开启；直接返回err
 	if !utilfeature.DefaultFeatureGate.Enabled(features.PodUnavailableBudgetDeleteGate) && !utilfeature.DefaultFeatureGate.Enabled(features.PodUnavailableBudgetUpdateGate) {
 		return admission.Errored(http.StatusBadRequest, fmt.Errorf("feature PodUnavailableBudget is invalid, please open via feature-gate(%s, %s)",
 			features.PodUnavailableBudgetDeleteGate, features.PodUnavailableBudgetUpdateGate))
 	}
 
-	obj := &policyv1alpha1.PodUnavailableBudget{}
+	obj := &policyv1alpha1.PodUnavailableBudget{} // 2.decode req(新的obj)
 	err := h.Decoder.Decode(req, obj)
 	if err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 	var old *policyv1alpha1.PodUnavailableBudget
-	//when Operation is update, decode older object
+	//when Operation is update, decode older object   3.如果Operation是update,则decode old obj
 	if req.AdmissionRequest.Operation == admissionv1.Update {
 		old = new(policyv1alpha1.PodUnavailableBudget)
 		if err := h.Decoder.Decode(
@@ -76,7 +106,7 @@ func (h *PodUnavailableBudgetCreateUpdateHandler) Handle(ctx context.Context, re
 			return admission.Errored(http.StatusBadRequest, err)
 		}
 	}
-	allErrs := h.validatingPodUnavailableBudgetFn(obj, old)
+	allErrs := h.validatingPodUnavailableBudgetFn(obj, old) //4.校验pub(newObj,oldObj),如果不合法返回错误
 	if len(allErrs) != 0 {
 		return admission.Errored(http.StatusBadRequest, allErrs.ToAggregate())
 	}
@@ -86,30 +116,32 @@ func (h *PodUnavailableBudgetCreateUpdateHandler) Handle(ctx context.Context, re
 func (h *PodUnavailableBudgetCreateUpdateHandler) validatingPodUnavailableBudgetFn(obj, old *policyv1alpha1.PodUnavailableBudget) field.ErrorList {
 	// validate pub.annotations
 	allErrs := field.ErrorList{}
+	// 1.查看pub的保护返回,可能会有 DELETE,EVICT,UPDATE 三种
 	if operationsValue, ok := obj.Annotations[policyv1alpha1.PubProtectOperationAnnotation]; ok {
 		operations := strings.Split(operationsValue, ",")
-		for _, operation := range operations {
+		for _, operation := range operations { //1.1 如果 operation 不等于  DELETE,EVICT,UPDATE 三种 ，代表非法
 			if operation != string(policyv1alpha1.PubUpdateOperation) && operation != string(policyv1alpha1.PubDeleteOperation) &&
 				operation != string(policyv1alpha1.PubEvictOperation) {
 				allErrs = append(allErrs, field.InternalError(field.NewPath("metadata"), fmt.Errorf("annotation[%s] is invalid", policyv1alpha1.PubProtectOperationAnnotation)))
 			}
 		}
 	}
+	// 2.从obj的Annotations上 获取obj 保护的总副本数
 	if replicasValue, ok := obj.Annotations[policyv1alpha1.PubProtectTotalReplicas]; ok {
 		if _, err := strconv.ParseInt(replicasValue, 10, 32); err != nil {
 			allErrs = append(allErrs, field.InternalError(field.NewPath("metadata"), fmt.Errorf("annotation[%s] is invalid", policyv1alpha1.PubProtectTotalReplicas)))
 		}
 	}
 
-	//validate Pub.Spec
+	//validate Pub.Spec 3.验证pub spec 是否合法
 	allErrs = append(allErrs, validatePodUnavailableBudgetSpec(obj, field.NewPath("spec"))...)
-	// when operation is update, validating whether old and new pub conflict
+	// when operation is update, validating whether old and new pub conflict 4.当操作是update, 验证新旧 pub 是否冲突,其实就是new和old的 Selector 或 TargetReference 是否发生变化
 	if old != nil {
 		allErrs = append(allErrs, validateUpdatePubConflict(obj, old, field.NewPath("spec"))...)
 	}
-	//validate whether pub is in conflict with others
+	// validate whether pub is in conflict with others  5.验证pub是否和其他的冲突
 	pubList := &policyv1alpha1.PodUnavailableBudgetList{}
-	if err := h.Client.List(context.TODO(), pubList, &client.ListOptions{Namespace: obj.Namespace}); err != nil {
+	if err := h.Client.List(context.TODO(), pubList, &client.ListOptions{Namespace: obj.Namespace}); err != nil { // 查询该namespace下所有的 pub
 		allErrs = append(allErrs, field.InternalError(field.NewPath(""), fmt.Errorf("query other podUnavailableBudget failed, err: %v", err)))
 	} else {
 		allErrs = append(allErrs, validatePubConflict(obj, pubList.Items, field.NewPath("spec"))...)
@@ -130,11 +162,12 @@ func validatePodUnavailableBudgetSpec(obj *policyv1alpha1.PodUnavailableBudget, 
 	spec := &obj.Spec
 	allErrs := field.ErrorList{}
 
+	// 1.如果Selector和TargetReference都为空，代表错误
 	if spec.Selector == nil && spec.TargetReference == nil {
 		allErrs = append(allErrs, field.Required(fldPath.Child("selector, targetRef"), "no selector or targetRef defined in PodUnavailableBudget"))
-	} else if spec.Selector != nil && spec.TargetReference != nil {
+	} else if spec.Selector != nil && spec.TargetReference != nil { // 2.如果Selector和TargetReference都不为空，互斥，代表错误
 		allErrs = append(allErrs, field.Required(fldPath.Child("selector, targetRef"), "selector and targetRef are mutually exclusive"))
-	} else if spec.TargetReference != nil {
+	} else if spec.TargetReference != nil { // 3.如果TargetReference不为空，查看是否满足要求，不满足，代表错误
 		if spec.TargetReference.APIVersion == "" || spec.TargetReference.Name == "" || spec.TargetReference.Kind == "" {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("TargetReference"), spec.TargetReference, "empty TargetReference is not valid for PodUnavailableBudget."))
 		}
@@ -142,7 +175,7 @@ func validatePodUnavailableBudgetSpec(obj *policyv1alpha1.PodUnavailableBudget, 
 		if err != nil {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("TargetReference"), spec.TargetReference, err.Error()))
 		}
-	} else {
+	} else { // 4.如果 Selector 不为空，查看是否满足要求，不满足，代表错误
 		allErrs = append(allErrs, metavalidation.ValidateLabelSelector(spec.Selector, fldPath.Child("selector"))...)
 		if len(spec.Selector.MatchLabels)+len(spec.Selector.MatchExpressions) == 0 {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("selector"), spec.Selector, "empty selector is not valid for PodUnavailableBudget."))
@@ -153,11 +186,12 @@ func validatePodUnavailableBudgetSpec(obj *policyv1alpha1.PodUnavailableBudget, 
 		}
 	}
 
+	// 5.如果 MaxUnavailable  和 MinAvailable 都为nil,代表错误
 	if spec.MaxUnavailable == nil && spec.MinAvailable == nil {
 		allErrs = append(allErrs, field.Required(fldPath.Child("maxUnavailable, minAvailable"), "no maxUnavailable or minAvailable defined in PodUnavailableBudget"))
-	} else if spec.MaxUnavailable != nil && spec.MinAvailable != nil {
+	} else if spec.MaxUnavailable != nil && spec.MinAvailable != nil { // 6.如果 MaxUnavailable  和 MinAvailable 都不为nil,互斥，代表错误
 		allErrs = append(allErrs, field.Required(fldPath.Child("maxUnavailable, minAvailable"), "maxUnavailable and minAvailable are mutually exclusive"))
-	} else if spec.MaxUnavailable != nil {
+	} else if spec.MaxUnavailable != nil { // 7.ValidatePositiveIntOrPercent会判断给的值是否是int或string,如果不是，则代表错误
 		allErrs = append(allErrs, appsvalidation.ValidatePositiveIntOrPercent(*spec.MaxUnavailable, fldPath.Child("maxUnavailable"))...)
 		allErrs = append(allErrs, appsvalidation.IsNotMoreThan100Percent(*spec.MaxUnavailable, fldPath.Child("maxUnavailable"))...)
 	} else {
@@ -167,14 +201,15 @@ func validatePodUnavailableBudgetSpec(obj *policyv1alpha1.PodUnavailableBudget, 
 	return allErrs
 }
 
+// 验证当前的pub和这个namespace 的其他 pub有没有冲突
 func validatePubConflict(pub *policyv1alpha1.PodUnavailableBudget, others []policyv1alpha1.PodUnavailableBudget, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	for _, other := range others {
-		if pub.Name == other.Name {
+		if pub.Name == other.Name { // 1，如果是自己，就直接忽略
 			continue
 		}
-		// pod cannot be controlled by multiple pubs
+		// pod cannot be controlled by multiple pubs  2.pod 不能被多个 pub 控制
 		if pub.Spec.TargetReference != nil && other.Spec.TargetReference != nil {
 			curRef := pub.Spec.TargetReference
 			otherRef := other.Spec.TargetReference

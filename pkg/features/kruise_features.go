@@ -60,9 +60,11 @@ const (
 	ResourcesDeletionProtection featuregate.Feature = "ResourcesDeletionProtection"
 
 	// PodUnavailableBudgetDeleteGate enables PUB capability to protect pod from deletion and eviction
+	// PodUnavailableBudgetDeleteGate 启用 PUB 功能以保护 pod 不被删除和驱逐
 	PodUnavailableBudgetDeleteGate featuregate.Feature = "PodUnavailableBudgetDeleteGate"
 
 	// PodUnavailableBudgetUpdateGate enables PUB capability to protect pod from in-place update
+	// PodUnavailableBudgetUpdateGate 启用 PUB 功能  以保护 pod 免受 in-place update
 	PodUnavailableBudgetUpdateGate featuregate.Feature = "PodUnavailableBudgetUpdateGate"
 
 	// WorkloadSpread enable WorkloadSpread to constrain the spread of the workload.

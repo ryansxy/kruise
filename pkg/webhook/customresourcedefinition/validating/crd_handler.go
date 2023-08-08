@@ -20,8 +20,9 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -54,6 +55,7 @@ func (h *CRDHandler) Handle(ctx context.Context, req admission.Request) admissio
 
 	var metaObj metav1.Object
 	var gvk schema.GroupVersionKind
+	// crd 分为两个版本，v1beta1 和 v1
 	switch req.Kind.Version {
 	case "v1beta1":
 		crd := &apiextensionsv1beta1.CustomResourceDefinition{}

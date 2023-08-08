@@ -20,11 +20,12 @@ import (
 	"context"
 	"net/http"
 
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	"github.com/openkruise/kruise/pkg/webhook/util/deletionprotection"
 )
 
 // UnitedDeploymentCreateUpdateHandler handles UnitedDeployment
@@ -67,6 +68,7 @@ func (h *UnitedDeploymentCreateUpdateHandler) Handle(ctx context.Context, req ad
 		if allErrs := append(validationErrorList, updateErrorList...); len(allErrs) > 0 {
 			return admission.Errored(http.StatusUnprocessableEntity, allErrs.ToAggregate())
 		}
+		// delete 会触发防删除的操作
 	case admissionv1.Delete:
 		if len(req.OldObject.Raw) == 0 {
 			klog.Warningf("Skip to validate UnitedDeployment %s/%s deletion for no old object, maybe because of Kubernetes version < 1.16", req.Namespace, req.Name)

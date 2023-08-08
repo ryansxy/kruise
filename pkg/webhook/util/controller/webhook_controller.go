@@ -93,6 +93,8 @@ func New(cfg *rest.Config, handlers map[string]admission.Handler) (*Controller, 
 	secretInformer := coreinformers.New(c.informerFactory, namespace, nil).Secrets()
 	admissionRegistrationInformer := admissionregistrationinformers.New(c.informerFactory, v1.NamespaceAll, nil)
 
+	// 1.secret Handler
+	// 只关心和自己相关的 secretName(可能为kruise-webhook-certs) 的 add 和 update,入queue
 	secretInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			secret := obj.(*v1.Secret)
@@ -110,6 +112,8 @@ func New(cfg *rest.Config, handlers map[string]admission.Handler) (*Controller, 
 		},
 	})
 
+	// 2.MutatingWebhookConfigurations Handler
+	// 只关心和自己相关的 MutatingWebhookConfiguration Name(可能为 kruise-mutating-webhook-configuration) 的 add 和 update,入queue
 	admissionRegistrationInformer.MutatingWebhookConfigurations().Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			conf := obj.(*admissionregistrationv1.MutatingWebhookConfiguration)
@@ -127,6 +131,8 @@ func New(cfg *rest.Config, handlers map[string]admission.Handler) (*Controller, 
 		},
 	})
 
+	// 3.ValidatingWebhookConfigurations Handler
+	// 只关心和自己相关的 ValidatingWebhookConfigurations Name(可能为 kruise-validating-webhook-configuration) 的 add 和 update,入queue
 	admissionRegistrationInformer.ValidatingWebhookConfigurations().Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			conf := obj.(*admissionregistrationv1.ValidatingWebhookConfiguration)
@@ -144,6 +150,8 @@ func New(cfg *rest.Config, handlers map[string]admission.Handler) (*Controller, 
 		},
 	})
 
+	// 4. crd Handler
+	// 只关心crd.spc.group=apps.kruise.io" 的crd 的 add 和 update,入queue
 	c.crdClient = apiextensionsclientset.NewForConfigOrDie(cfg)
 	c.crdInformer = apiextensionsinformers.NewCustomResourceDefinitionInformer(c.crdClient, 0, cache.Indexers{})
 	c.crdInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -162,6 +170,7 @@ func New(cfg *rest.Config, handlers map[string]admission.Handler) (*Controller, 
 			}
 		},
 	})
+	// 5.设置crdLister: 通过crdInformer 的 indexer
 	c.crdLister = apiextensionslisters.NewCustomResourceDefinitionLister(c.crdInformer.GetIndexer())
 
 	c.synced = []cache.InformerSynced{
@@ -181,14 +190,15 @@ func (c *Controller) Start(ctx context.Context) {
 	klog.Infof("Starting webhook-controller")
 	defer klog.Infof("Shutting down webhook-controller")
 
-	c.informerFactory.Start(ctx.Done())
+	c.informerFactory.Start(ctx.Done()) // 1.启动 k8s  informerFactory
 	go func() {
-		c.crdInformer.Run(ctx.Done())
+		c.crdInformer.Run(ctx.Done()) // 2.Run  crdInformer
 	}()
 	if !cache.WaitForNamedCacheSync("webhook-controller", ctx.Done(), c.synced...) {
 		return
 	}
 
+	// 3. 每隔1s运行一次
 	go wait.Until(func() {
 		for c.processNextWorkItem() {
 		}
@@ -205,26 +215,33 @@ func (c *Controller) processNextWorkItem() bool {
 	}
 	defer c.queue.Done(key)
 
-	err := c.sync()
+	err := c.sync() // 1.如果同步成功，调用queue.AddAfter ,延迟1m入队，再次同步，即是定期同步。
 	if err == nil {
 		c.queue.AddAfter(key, defaultResyncPeriod)
 		c.queue.Forget(key)
 		return true
 	}
+	// 2.如果同步失败，则日志，并加入限速队列，再次重试,
+	// 注意：失败的时候不用使用Forget(key)
 
+	// Forget indicates that an item is finished being retried.  Doesn't matter whether it's for perm failing or for success,
+	// we'll stop the rate limiter from tracking it.  This only clears the `rateLimiter`, you still have to call `Done` on the queue.
+	// Forget 表示某item已完成重试。 不管是执行失败还是成功，
+	// 我们将关闭 rate limiter 跟踪它。 这只会清除 `rateLimiter`，您仍然需要在队列上调用 `Done`。
 	utilruntime.HandleError(fmt.Errorf("sync %q failed with %v", key, err))
 	c.queue.AddRateLimited(key)
 
 	return true
 }
 
+// 和 kruise 相关的secretName、MutatingWebhookConfigurations、validatingWebhookConfigurationName、以及 crd.spec.group=apps.kruise.io 的变更都会触发 入队reconcile
 func (c *Controller) sync() error {
 	klog.Infof("Starting to sync webhook certs and configurations")
 	defer func() {
 		klog.Infof("Finished to sync webhook certs and configurations")
 	}()
 
-	dnsName := webhookutil.GetHost()
+	dnsName := webhookutil.GetHost() // 1.获取 WEBHOOK_HOST env 的值，如果不存在， 则 dnsName = ns.svcName.svc
 	if len(dnsName) == 0 {
 		dnsName = generator.ServiceToCommonName(webhookutil.GetNamespace(), webhookutil.GetServiceName())
 	}
@@ -232,37 +249,42 @@ func (c *Controller) sync() error {
 	var certWriter writer.CertWriter
 	var err error
 
-	certWriterType := webhookutil.GetCertWriter()
+	certWriterType := webhookutil.GetCertWriter() // 2.获取 WEBHOOK_CERT_WRITER env 的值
+	// 2.1 如果type=fs或type=""且WEBHOOK_HOST env 的存在,certWriter 会等于 fsCertWriter
 	if certWriterType == writer.FsCertWriter || (len(certWriterType) == 0 && len(webhookutil.GetHost()) != 0) {
 		certWriter, err = writer.NewFSCertWriter(writer.FSCertWriterOptions{
-			Path: webhookutil.GetCertDir(),
+			Path: webhookutil.GetCertDir(), //  path="/tmp/kruise-webhook-certs"
 		})
 	} else {
+		// 2.2 如果type!=fs或type=""但WEBHOOK_HOST env 的不存在，certWriter 会等于 secretCertWriter
 		certWriter, err = writer.NewSecretCertWriter(writer.SecretCertWriterOptions{
 			Clientset: c.kubeClient,
-			Secret:    &types.NamespacedName{Namespace: webhookutil.GetNamespace(), Name: webhookutil.GetSecretName()},
+			Secret:    &types.NamespacedName{Namespace: webhookutil.GetNamespace(), Name: webhookutil.GetSecretName()}, //ns+secretName
 		})
 	}
 	if err != nil {
 		return fmt.Errorf("failed to ensure certs: %v", err)
 	}
 
+	// 3.EnsureCert 为 webhookClientConfig 提供证书。
 	certs, _, err := certWriter.EnsureCert(dnsName)
 	if err != nil {
 		return fmt.Errorf("failed to ensure certs: %v", err)
 	}
+	// 4.将证书写入到 CertDir 中
 	if err := writer.WriteCertsToDir(webhookutil.GetCertDir(), certs); err != nil {
 		return fmt.Errorf("failed to write certs to dir: %v", err)
 	}
-
+	// 5.
 	if err := configuration.Ensure(c.kubeClient, c.handlers, certs.CACert); err != nil {
 		return fmt.Errorf("failed to ensure configuration: %v", err)
 	}
-
+	// 6.
 	if err := crd.Ensure(c.crdClient, c.crdLister, certs.CACert); err != nil {
 		return fmt.Errorf("failed to ensure crd: %v", err)
 	}
 
+	// 7.once.Do 函数只会执行一次，这里执行完会close  uninit 的 channel
 	onceInit.Do(func() {
 		close(uninit)
 	})

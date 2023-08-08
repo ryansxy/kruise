@@ -20,8 +20,9 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/openkruise/kruise/pkg/util"
 	"k8s.io/klog/v2"
+
+	"github.com/openkruise/kruise/pkg/util"
 )
 
 func GetHost() string {
@@ -29,9 +30,10 @@ func GetHost() string {
 }
 
 func GetNamespace() string {
-	return util.GetKruiseNamespace()
+	return util.GetKruiseNamespace() // 从 POD_NAMESPACE env 中获取，如果不存在，使用默认值 kruise-system
 }
 
+// 从 SECRET_NAME env 中获取，如果不存在，使用默认值kruise-webhook-certs
 func GetSecretName() string {
 	if name := os.Getenv("SECRET_NAME"); len(name) > 0 {
 		return name
@@ -39,6 +41,7 @@ func GetSecretName() string {
 	return "kruise-webhook-certs"
 }
 
+// 从 SERVICE_NAME env 中获取，如果不存在，使用默认值kruise-webhook-service
 func GetServiceName() string {
 	if name := os.Getenv("SERVICE_NAME"); len(name) > 0 {
 		return name
@@ -46,6 +49,7 @@ func GetServiceName() string {
 	return "kruise-webhook-service"
 }
 
+// 从 WEBHOOK_PORT env 中获取 port 值，如果没有，使用默认值 9876
 func GetPort() int {
 	port := 9876
 	if p := os.Getenv("WEBHOOK_PORT"); len(p) > 0 {
@@ -58,6 +62,7 @@ func GetPort() int {
 	return port
 }
 
+// 从 WEBHOOK_CERT_DIR env 中获取 certDir，如果没有，使用默认值 /tmp/kruise-webhook-certs
 func GetCertDir() string {
 	if p := os.Getenv("WEBHOOK_CERT_DIR"); len(p) > 0 {
 		return p

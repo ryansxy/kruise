@@ -20,13 +20,6 @@ import (
 	"context"
 	"time"
 
-	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
-	appsv1beta1 "github.com/openkruise/kruise/apis/apps/v1beta1"
-	policyv1alpha1 "github.com/openkruise/kruise/apis/policy/v1alpha1"
-	"github.com/openkruise/kruise/pkg/control/pubcontrol"
-	"github.com/openkruise/kruise/pkg/util"
-	utilclient "github.com/openkruise/kruise/pkg/util/client"
-	"github.com/openkruise/kruise/pkg/util/controllerfinder"
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,6 +34,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	appsv1alpha1 "github.com/openkruise/kruise/apis/apps/v1alpha1"
+	appsv1beta1 "github.com/openkruise/kruise/apis/apps/v1beta1"
+	policyv1alpha1 "github.com/openkruise/kruise/apis/policy/v1alpha1"
+	"github.com/openkruise/kruise/pkg/control/pubcontrol"
+	"github.com/openkruise/kruise/pkg/util"
+	utilclient "github.com/openkruise/kruise/pkg/util/client"
+	"github.com/openkruise/kruise/pkg/util/controllerfinder"
 )
 
 var _ handler.EventHandler = &enqueueRequestForPod{}
@@ -71,6 +72,8 @@ func (p *enqueueRequestForPod) Update(evt event.UpdateEvent, q workqueue.RateLim
 	p.updatePod(q, evt.ObjectOld, evt.ObjectNew)
 }
 
+// 1.将对象转换为 pod，查看pod的Annotation，如果 kruise.io/related-pub != nil ,通过 annotation的值获取 pub
+// 2.如果 pub !=nil ,将其 enqueue
 func (p *enqueueRequestForPod) addPod(q workqueue.RateLimitingInterface, obj runtime.Object) {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
@@ -92,6 +95,7 @@ func (p *enqueueRequestForPod) addPod(q workqueue.RateLimitingInterface, obj run
 	})
 }
 
+// 通过pod获取指定的pub
 func GetPubForPod(c client.Client, pod *corev1.Pod) (*policyv1alpha1.PodUnavailableBudget, error) {
 	ref := metav1.GetControllerOf(pod)
 	if ref == nil {
@@ -135,6 +139,8 @@ func GetPubForPod(c client.Client, pod *corev1.Pod) (*policyv1alpha1.PodUnavaila
 	return nil, nil
 }
 
+//  判断oldPod和newPod的 ResourceVersion，如果相同，不做处理。
+//  如果不相同，获取指定的pub，如果pub不为nil, 判断本次变更是否会造成pod不可用，如果可能，将pub入队
 func (p *enqueueRequestForPod) updatePod(q workqueue.RateLimitingInterface, old, cur runtime.Object) {
 	newPod := cur.(*corev1.Pod)
 	oldPod := old.(*corev1.Pod)
@@ -210,14 +216,14 @@ func (e *SetEnqueueRequestForPUB) Generic(evt event.GenericEvent, q workqueue.Ra
 }
 
 func (e *SetEnqueueRequestForPUB) addSetRequest(object client.Object, q workqueue.RateLimitingInterface) {
-	gvk, _ := apiutil.GVKForObject(object, e.mgr.GetScheme())
+	gvk, _ := apiutil.GVKForObject(object, e.mgr.GetScheme()) // 1. 通过 obj 得到 gvk
 	targetRef := &policyv1alpha1.TargetReference{
 		APIVersion: gvk.GroupVersion().String(),
 		Kind:       gvk.Kind,
 	}
 	var namespace string
 	var temLabels map[string]string
-	switch gvk.Kind {
+	switch gvk.Kind { // 2.按照 gvk.kind 初始化targetRef
 	// cloneSet
 	case controllerfinder.ControllerKruiseKindCS.Kind:
 		obj := object.(*appsv1alpha1.CloneSet)
@@ -242,7 +248,7 @@ func (e *SetEnqueueRequestForPUB) addSetRequest(object client.Object, q workqueu
 			temLabels = obj.Spec.Template.Labels
 		}
 	}
-	// fetch matched pub
+	// fetch matched pub  3.获取到所有pubList，找到对应的pub
 	pubList := &policyv1alpha1.PodUnavailableBudgetList{}
 	if err := e.mgr.GetClient().List(context.TODO(), pubList, &client.ListOptions{Namespace: namespace}); err != nil {
 		klog.Errorf("SetEnqueueRequestForPUB list pub failed: %s", err.Error())
@@ -272,6 +278,7 @@ func (e *SetEnqueueRequestForPUB) addSetRequest(object client.Object, q workqueu
 		}
 	}
 
+	// 4. 将 pub 入队
 	q.Add(reconcile.Request{
 		NamespacedName: types.NamespacedName{
 			Name:      matched.Name,

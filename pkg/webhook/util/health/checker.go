@@ -108,6 +108,7 @@ func isRemove(event fsnotify.Event) bool {
 }
 
 func Checker(_ *http.Request) error {
+	// 1.一次性的加载证书相关，并初始化到client
 	onceWatch.Do(func() {
 		if err := loadHTTPClientWithCACert(); err != nil {
 			panic(fmt.Errorf("failed to load ca-cert for the first time: %v", err))
@@ -122,7 +123,7 @@ func Checker(_ *http.Request) error {
 		go watchCACert(watcher)
 	})
 
-	url := fmt.Sprintf("https://localhost:%d/healthz", webhookutil.GetPort())
+	url := fmt.Sprintf("https://localhost:%d/healthz", webhookutil.GetPort()) // 2.像指定的 webhook:port 发起 healthz check 请求
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return err

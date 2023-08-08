@@ -20,14 +20,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/openkruise/kruise/apis"
-	"github.com/openkruise/kruise/pkg/client"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+
+	"github.com/openkruise/kruise/apis"
+	"github.com/openkruise/kruise/pkg/client"
 )
 
 var (
@@ -46,6 +47,7 @@ func init() {
 	_ = apis.AddToScheme(internalScheme)
 }
 
+// 查看 k8s 的 DiscoveryClient 中是否有 包含这个gvk， 包含返回true
 func DiscoverGVK(gvk schema.GroupVersionKind) bool {
 	genericClient := client.GetGenericClient()
 	if genericClient == nil {
